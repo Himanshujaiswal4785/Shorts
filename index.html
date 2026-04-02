@@ -6,850 +6,647 @@
 <title>Private Vault</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 
-<!-- ===== FIREBASE CONFIG — REPLACE THESE VALUES ===== -->
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getStorage, ref, uploadBytesResumable, getDownloadURL, listAll, deleteObject, getMetadata }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getStorage, ref as sRef, uploadBytesResumable, getDownloadURL, listAll, deleteObject, getMetadata }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+import { getDatabase, ref as dbRef, set, get, remove }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
-  const firebaseConfig = {
-    apiKey: "AIzaSyDShjpMdRUbxt3sKCCSEi4ZsUxXwGtPvGM",
-    authDomain: "product-e47f0.firebaseapp.com",
-    databaseURL: "https://product-e47f0-default-rtdb.firebaseio.com",
-    projectId: "product-e47f0",
-    storageBucket: "product-e47f0.firebasestorage.app",
-    messagingSenderId: "832399407870",
-    appId: "1:832399407870:web:d82b73e1be593874ab83af"
-  };
+// ─── CONFIG ────────────────────────────────
+const firebaseConfig = {
+  apiKey:            "AIzaSyDShjpMdRUbxt3sKCCSEi4ZsUxXwGtPvGM",
+  authDomain:        "product-e47f0.firebaseapp.com",
+  databaseURL:       "https://product-e47f0-default-rtdb.firebaseio.com",
+  projectId:         "product-e47f0",
+  storageBucket:     "product-e47f0.firebasestorage.app",
+  messagingSenderId: "832399407870",
+  appId:             "1:832399407870:web:d82b73e1be593874ab83af"
+};
 
-  // ⚠️ CHANGE THIS SECRET TOKEN (keep it long and random)
-  const SECRET_TOKEN = "vault2024xK9mP3qR7nL";
+const SECRET_TOKEN   = "vault2024xK9mP3qR7nL";
+const ADMIN_PASSWORD = "admin";
+const SESSION_MS     = 24 * 60 * 60 * 1000;
 
-  // ⚠️ CHANGE THIS TO YOUR ADMIN PASSWORD
-  const ADMIN_PASSWORD = "admin123";
+const app     = initializeApp(firebaseConfig);
+const storage = getStorage(app);
+const db      = getDatabase(app);
 
-  // 24 hour session duration
-  const SESSION_DURATION = 24 * 60 * 60 * 1000;
+// ─── STATE ─────────────────────────────────
+let isAdmin     = false;
+let currentPath = "";   // e.g. "photos" or "photos/trips"
 
-  const app = initializeApp(firebaseConfig);
-  const storage = getStorage(app);
-
-  // ─── ACCESS CONTROL ──────────────────────────────────
-  function checkAccess() {
-    const hash = window.location.hash;
-    const params = new URLSearchParams(hash.replace('#', ''));
-    const token = params.get('access');
-
-    if (token === SECRET_TOKEN) {
-      // Valid token — grant/renew 24hr session
-      const expiry = Date.now() + SESSION_DURATION;
-      localStorage.setItem('vaultExpiry', expiry);
-      // Clean the token from URL (hide it)
-      history.replaceState(null, '', window.location.pathname);
-      return true;
-    }
-
-    // Check existing session
-    const expiry = localStorage.getItem('vaultExpiry');
-    if (expiry && Date.now() < parseInt(expiry)) {
-      return true;
-    }
-
-    return false;
+// ─── DEVICE ID ─────────────────────────────
+function getDeviceId() {
+  let id = localStorage.getItem("vaultDevice");
+  if (!id) {
+    id = "dv_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem("vaultDevice", id);
   }
+  return id;
+}
 
-  function getRemainingTime() {
-    const expiry = localStorage.getItem('vaultExpiry');
-    if (!expiry) return 0;
-    return Math.max(0, parseInt(expiry) - Date.now());
-  }
-
-  // ─── BOOT ─────────────────────────────────────────────
-  window.addEventListener('DOMContentLoaded', () => {
-    const hasAccess = checkAccess();
-
-    if (!hasAccess) {
-      showBlockedPage();
-      return;
-    }
-
-    showVault();
+async function registerVisit() {
+  const did  = getDeviceId();
+  const ref  = dbRef(db, "visitors/" + did);
+  const snap = await get(ref);
+  const now  = Date.now();
+  const back = snap.exists();
+  await set(ref, {
+    firstSeen: back ? snap.val().firstSeen : now,
+    lastSeen:  now,
+    visits:    back ? (snap.val().visits || 1) + 1 : 1
   });
+  return { back, data: back ? snap.val() : null };
+}
 
-  // ─── BLOCKED PAGE ─────────────────────────────────────
-  function showBlockedPage() {
-    document.body.innerHTML = `
-      <div class="blocked-screen">
-        <div class="blocked-inner">
-          <div class="lock-icon">🔒</div>
-          <h1 class="blocked-title">Access Denied</h1>
-          <p class="blocked-sub">This page is private.<br>You need a special link to enter.</p>
-          <div class="blocked-code">404</div>
-        </div>
-      </div>`;
+// ─── ACCESS ─────────────────────────────────
+function checkAccess() {
+  const p = new URLSearchParams(window.location.hash.slice(1));
+  if (p.get("access") === SECRET_TOKEN) {
+    localStorage.setItem("vaultExp", Date.now() + SESSION_MS);
+    history.replaceState(null, "", location.pathname);
+    return true;
+  }
+  const exp = localStorage.getItem("vaultExp");
+  return exp && Date.now() < +exp;
+}
+
+function getRemaining() {
+  const exp = localStorage.getItem("vaultExp");
+  return exp ? Math.max(0, +exp - Date.now()) : 0;
+}
+
+// ─── BOOT ──────────────────────────────────
+window.addEventListener("DOMContentLoaded", async () => {
+  if (!checkAccess()) { blocked(); return; }
+  const { back, data } = await registerVisit();
+  showVault(back, data);
+});
+
+function blocked() {
+  document.body.innerHTML = `
+    <div class="block-screen">
+      <div class="block-inner">
+        <div class="block-icon">🔒</div>
+        <h1 class="block-title">ACCESS DENIED</h1>
+        <p class="block-sub">This vault is private.<br>You need a special link to enter.</p>
+        <div class="block-code">403</div>
+      </div>
+    </div>`;
+}
+
+function showVault(isReturning, visitorData) {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("app").style.display     = "block";
+
+  if (isReturning && visitorData) {
+    const d = new Date(visitorData.firstSeen).toLocaleDateString("en-IN");
+    toast(`👋 Welcome back! Visit #${visitorData.visits} — member since ${d}`);
+  } else {
+    toast("🎉 Welcome! First time entering the Vault.");
   }
 
-  // ─── VAULT PAGE ───────────────────────────────────────
-  function showVault() {
-    const remaining = getRemainingTime();
-    document.getElementById('loading').style.display = 'none';
-    document.getElementById('vault-app').style.display = 'block';
-    startTimer(remaining);
-    loadFiles();
-    setupUpload();
-    setupAdmin();
+  startTimer();
+  setupAdminUI();
+  loadFolder();
+  setupUpload();
+}
+
+// ─── TIMER ─────────────────────────────────
+function startTimer() {
+  const el = document.getElementById("timer");
+  const tick = () => {
+    const r = getRemaining();
+    if (!r) { localStorage.removeItem("vaultExp"); location.reload(); return; }
+    const h = Math.floor(r / 3600000), m = Math.floor((r % 3600000) / 60000), s = Math.floor((r % 60000) / 1000);
+    el.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
+  };
+  tick(); setInterval(tick, 1000);
+}
+const pad = n => String(n).padStart(2, "0");
+
+// ─── ADMIN UI ──────────────────────────────
+function setupAdminUI() {
+  document.getElementById("admin-btn").onclick = () => {
+    if (isAdmin) { logoutAdmin(); return; }
+    const p = document.getElementById("admin-panel");
+    p.style.display = p.style.display === "none" ? "flex" : "none";
+  };
+  document.getElementById("admin-submit").onclick = tryLogin;
+  document.getElementById("admin-pass").onkeydown = e => e.key === "Enter" && tryLogin();
+  document.getElementById("new-folder-btn").onclick = createFolder;
+}
+
+function tryLogin() {
+  if (document.getElementById("admin-pass").value === ADMIN_PASSWORD) {
+    isAdmin = true;
+    document.getElementById("admin-panel").style.display  = "none";
+    document.getElementById("admin-btn").innerHTML        = "🛡️ Admin <span style='color:#4ade80'>●</span>";
+    document.getElementById("upload-zone").style.display  = "block";
+    document.getElementById("admin-bar").style.display    = "flex";
+    toast("✓ Admin mode enabled");
+    loadFolder();
+  } else {
+    document.getElementById("admin-err").textContent = "✗ Wrong password";
+    setTimeout(() => document.getElementById("admin-err").textContent = "", 2000);
   }
+}
 
-  // ─── TIMER ────────────────────────────────────────────
-  function startTimer(ms) {
-    const timerEl = document.getElementById('session-timer');
+function logoutAdmin() {
+  isAdmin = false;
+  document.getElementById("admin-btn").textContent       = "🛡 Admin";
+  document.getElementById("upload-zone").style.display   = "none";
+  document.getElementById("admin-bar").style.display     = "none";
+  toast("Admin mode off"); loadFolder();
+}
 
-    function update() {
-      const rem = getRemainingTime();
-      if (rem <= 0) {
-        localStorage.removeItem('vaultExpiry');
-        location.reload();
-        return;
+// ─── FOLDER NAV ────────────────────────────
+function storagePath(name) {
+  return "vault/" + (currentPath ? currentPath + "/" : "") + name;
+}
+
+function buildBreadcrumb() {
+  const bc    = document.getElementById("breadcrumb");
+  const parts = currentPath ? currentPath.split("/") : [];
+  let html = `<span class="bc" data-p="">🏠 Home</span>`;
+  let built = "";
+  parts.forEach(p => {
+    built += (built ? "/" : "") + p;
+    html  += ` <span class="bc-sep">›</span><span class="bc" data-p="${built}">${p}</span>`;
+  });
+  bc.innerHTML = html;
+  bc.querySelectorAll(".bc").forEach(el =>
+    el.addEventListener("click", () => { currentPath = el.dataset.p; loadFolder(); })
+  );
+}
+
+// ─── LOAD FOLDER ───────────────────────────
+async function loadFolder() {
+  buildBreadcrumb();
+  const grid  = document.getElementById("grid");
+  const empty = document.getElementById("empty");
+  grid.innerHTML = `<div class="loading-msg">Loading…</div>`;
+  empty.style.display = "none";
+
+  try {
+    const path   = "vault/" + (currentPath ? currentPath + "/" : "");
+    const res    = await listAll(sRef(storage, path));
+    const pSnap  = await get(dbRef(db, "pins"));
+    const pins   = pSnap.exists() ? pSnap.val() : {};
+
+    const folders = res.prefixes
+      .filter(p => p.name !== ".keep")
+      .map(p => ({ kind: "folder", name: p.name, pinned: !!pins[`f_${currentPath}_${p.name}`] }));
+
+    const files = (await Promise.all(res.items
+      .filter(i => i.name !== ".keep")
+      .map(async i => {
+        try {
+          const [url, meta] = await Promise.all([getDownloadURL(i), getMetadata(i)]);
+          return { kind: "file", name: i.name, url, size: meta.size, ctype: meta.contentType, ref: i, pinned: !!pins[`fi_${currentPath}_${i.name}`] };
+        } catch { return null; }
+      }))).filter(Boolean);
+
+    const all = [...folders, ...files].sort((a, b) => {
+      if (a.pinned !== b.pinned) return +b.pinned - +a.pinned;
+      if (a.kind   !== b.kind)   return a.kind === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    if (!all.length) { grid.innerHTML = ""; empty.style.display = "flex"; return; }
+
+    grid.innerHTML = "";
+    all.forEach(item => grid.appendChild(item.kind === "folder" ? folderCard(item) : fileCard(item)));
+  } catch (e) {
+    grid.innerHTML = `<div class="err-msg">⚠ Error: ${e.message}<br><br><small>Fix Firebase Storage Rules → allow read, write: if true</small></div>`;
+  }
+}
+
+// ─── FOLDER CARD ───────────────────────────
+function folderCard(item) {
+  const d = document.createElement("div");
+  d.className = "card folder-card" + (item.pinned ? " pinned" : "");
+  d.innerHTML = `
+    ${item.pinned ? `<div class="pin-dot">📌</div>` : ""}
+    <div class="card-icon">📁</div>
+    <div class="card-info">
+      <div class="card-name">${item.name}</div>
+      <div class="card-meta">Folder</div>
+    </div>
+    <div class="card-actions">
+      ${isAdmin ? `
+        <button class="btn-pin">${item.pinned ? "📌" : "📍"}</button>
+        <button class="btn-del">🗑</button>` : ""}
+    </div>`;
+  d.querySelector(".card-icon").onclick = () => openFolder(item.name);
+  d.querySelector(".card-name").onclick = () => openFolder(item.name);
+  if (isAdmin) {
+    d.querySelector(".btn-pin").onclick = () => togglePin("f", item.name, item.pinned);
+    d.querySelector(".btn-del").onclick = () => delFolder(item.name);
+  }
+  return d;
+}
+
+function openFolder(name) {
+  currentPath = currentPath ? `${currentPath}/${name}` : name;
+  loadFolder();
+}
+
+// ─── FILE CARD ─────────────────────────────
+function fileCard(item) {
+  const d    = document.createElement("div");
+  const isImg = item.ctype?.startsWith("image/");
+  const isAud = item.ctype?.startsWith("audio/");
+  d.className = "card file-card" + (item.pinned ? " pinned" : "");
+  d.innerHTML = `
+    ${item.pinned ? `<div class="pin-dot">📌</div>` : ""}
+    ${isImg ? `<div class="img-thumb" style="background-image:url('${item.url}')"></div>` : ""}
+    <div class="card-row">
+      <div class="card-icon">${fileIcon(item.name, item.ctype)}</div>
+      <div class="card-info">
+        <div class="card-name" title="${item.name}">${item.name}</div>
+        <div class="card-meta">${fmtSize(item.size)}</div>
+      </div>
+      <div class="card-actions">
+        ${isAud ? `<button class="btn-play" data-url="${item.url}" data-name="${item.name}">▶ Play</button>` : ""}
+        <a href="${item.url}" target="_blank" download="${item.name}" class="btn-dl">⬇ Save</a>
+        ${isAdmin ? `
+          <button class="btn-pin">${item.pinned ? "📌" : "📍"}</button>
+          <button class="btn-del">🗑</button>` : ""}
+      </div>
+    </div>`;
+  if (isAdmin) {
+    d.querySelector(".btn-pin").onclick = () => togglePin("fi", item.name, item.pinned);
+    d.querySelector(".btn-del").onclick = () => delFile(item.ref, item.name);
+  }
+  d.querySelector(".btn-play")?.addEventListener("click", e => {
+    playAudio(e.currentTarget.dataset.url, e.currentTarget.dataset.name);
+  });
+  return d;
+}
+
+// ─── AUDIO PLAYER ──────────────────────────
+function playAudio(url, name) {
+  document.getElementById("aud-title").textContent = name;
+  document.getElementById("aud-src").src = url;
+  document.getElementById("aud-player").style.display = "flex";
+  const el = document.getElementById("aud-el"); el.load(); el.play();
+}
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("aud-close").onclick = () => {
+    document.getElementById("aud-player").style.display = "none";
+    document.getElementById("aud-el").pause();
+  };
+});
+
+// ─── PIN ───────────────────────────────────
+async function togglePin(type, name, wasPinned) {
+  const key = `${type}_${currentPath}_${name}`;
+  wasPinned ? await remove(dbRef(db, `pins/${key}`)) : await set(dbRef(db, `pins/${key}`), true);
+  toast(wasPinned ? "Unpinned" : "📌 Pinned to top!");
+  loadFolder();
+}
+
+// ─── DELETE ────────────────────────────────
+async function delFile(ref, name) {
+  if (!confirm(`Delete "${name}"?`)) return;
+  await deleteObject(ref); toast("🗑 Deleted"); loadFolder();
+}
+
+async function delFolder(name) {
+  if (!confirm(`Delete folder "${name}" and all its files?`)) return;
+  try {
+    const fp  = "vault/" + (currentPath ? `${currentPath}/${name}` : name);
+    const res = await listAll(sRef(storage, fp + "/"));
+    await Promise.all(res.items.map(i => deleteObject(i)));
+    toast("🗑 Folder deleted"); loadFolder();
+  } catch (e) { toast("Error: " + e.message); }
+}
+
+// ─── CREATE FOLDER ─────────────────────────
+async function createFolder() {
+  const name = prompt("New folder name:");
+  if (!name?.trim()) return;
+  const clean = name.trim().replace(/[^a-zA-Z0-9_\-. ]/g, "_");
+  const ph    = sRef(storage, storagePath(clean + "/.keep"));
+  await uploadBytesResumable(ph, new Blob([""], { type: "text/plain" }));
+  toast(`📁 Folder "${clean}" created`); loadFolder();
+}
+
+// ─── UPLOAD ────────────────────────────────
+function setupUpload() {
+  const dz   = document.getElementById("dropzone");
+  const inp  = document.getElementById("file-input");
+  dz.onclick = () => inp.click();
+  dz.ondragover = e => { e.preventDefault(); dz.classList.add("dz-over"); };
+  dz.ondragleave = () => dz.classList.remove("dz-over");
+  dz.ondrop = e => { e.preventDefault(); dz.classList.remove("dz-over"); upload(e.dataTransfer.files); };
+  inp.onchange = () => upload(inp.files);
+}
+
+function upload(files) {
+  if (!files?.length) return;
+  let done = 0;
+  Array.from(files).forEach(file => {
+    const r    = sRef(storage, storagePath(file.name));
+    const task = uploadBytesResumable(r, file);
+    const wrap = document.getElementById("prog-wrap");
+    const bar  = document.getElementById("prog-bar");
+    const txt  = document.getElementById("prog-txt");
+    wrap.style.display = "block";
+    task.on("state_changed",
+      s => {
+        const p = Math.round(s.bytesTransferred / s.totalBytes * 100);
+        bar.style.width = p + "%";
+        txt.textContent = `${file.name} — ${p}%`;
+      },
+      e => { toast("Upload failed: " + e.message); wrap.style.display = "none"; console.error(e); },
+      () => {
+        done++;
+        toast(`✓ ${file.name} uploaded!`);
+        if (done === files.length) {
+          wrap.style.display = "none"; bar.style.width = "0%";
+          document.getElementById("file-input").value = "";
+          loadFolder();
+        }
       }
-      const h = Math.floor(rem / 3600000);
-      const m = Math.floor((rem % 3600000) / 60000);
-      const s = Math.floor((rem % 60000) / 1000);
-      timerEl.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-    }
+    );
+  });
+}
 
-    update();
-    setInterval(update, 1000);
-  }
+// ─── HELPERS ───────────────────────────────
+function fileIcon(name, ctype) {
+  if (ctype?.startsWith("image/")) return "🖼️";
+  if (ctype?.startsWith("video/")) return "🎬";
+  if (ctype?.startsWith("audio/")) return "🎵";
+  if (ctype?.includes("pdf"))      return "📄";
+  if (ctype?.includes("word"))     return "📝";
+  if (ctype?.includes("sheet")||ctype?.includes("excel")) return "📊";
+  const e = name.split(".").pop().toLowerCase();
+  return {jpg:"🖼️",jpeg:"🖼️",png:"🖼️",gif:"🖼️",webp:"🖼️",mp4:"🎬",mov:"🎬",mkv:"🎬",
+          mp3:"🎵",wav:"🎵",aac:"🎵",flac:"🎵",m4a:"🎵",pdf:"📄",doc:"📝",docx:"📝",
+          xls:"📊",xlsx:"📊",zip:"🗜️",rar:"🗜️",txt:"📃"}[e] || "📁";
+}
 
-  // ─── FORMAT FILE SIZE ─────────────────────────────────
-  function formatSize(bytes) {
-    if (!bytes) return '—';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
-    return (bytes / 1073741824).toFixed(1) + ' GB';
-  }
+function fmtSize(b) {
+  if (!b) return "—";
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b/1024).toFixed(1) + " KB";
+  if (b < 1073741824) return (b/1048576).toFixed(1) + " MB";
+  return (b/1073741824).toFixed(1) + " GB";
+}
 
-  // ─── FILE ICON ────────────────────────────────────────
-  function fileIcon(name) {
-    const ext = name.split('.').pop().toLowerCase();
-    const map = {
-      jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️', heic: '🖼️',
-      mp4: '🎬', mov: '🎬', avi: '🎬', mkv: '🎬', webm: '🎬',
-      mp3: '🎵', wav: '🎵', aac: '🎵', flac: '🎵', ogg: '🎵', m4a: '🎵',
-      pdf: '📄', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊', ppt: '📊', pptx: '📊',
-      zip: '🗜️', rar: '🗜️', '7z': '🗜️',
-      txt: '📃', csv: '📃', json: '📃',
-    };
-    return map[ext] || '📁';
-  }
-
-  // ─── LOAD FILES ───────────────────────────────────────
-  async function loadFiles() {
-    const grid = document.getElementById('file-grid');
-    const empty = document.getElementById('empty-state');
-    grid.innerHTML = '<div class="loading-files">Loading files…</div>';
-
-    try {
-      const listRef = ref(storage, 'vault/');
-      const res = await listAll(listRef);
-
-      if (res.items.length === 0) {
-        grid.innerHTML = '';
-        empty.style.display = 'flex';
-        return;
-      }
-
-      empty.style.display = 'none';
-      const cards = await Promise.all(res.items.map(async (itemRef) => {
-        const [url, meta] = await Promise.all([getDownloadURL(itemRef), getMetadata(itemRef)]);
-        return { name: itemRef.name, url, size: meta.size, type: meta.contentType, ref: itemRef };
-      }));
-
-      grid.innerHTML = '';
-      cards.forEach(file => {
-        const card = document.createElement('div');
-        card.className = 'file-card';
-        card.innerHTML = `
-          <div class="file-icon-wrap">${fileIcon(file.name)}</div>
-          <div class="file-info">
-            <div class="file-name" title="${file.name}">${file.name}</div>
-            <div class="file-size">${formatSize(file.size)}</div>
-          </div>
-          <div class="file-actions">
-            <a href="${file.url}" target="_blank" download="${file.name}" class="btn-dl" title="Download">⬇ Download</a>
-            <button class="btn-del" data-path="vault/${file.name}" title="Delete">🗑</button>
-          </div>`;
-        grid.appendChild(card);
-      });
-
-      // Delete buttons (admin only)
-      document.querySelectorAll('.btn-del').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          if (!window.isAdmin) {
-            showToast('Admin login required to delete files.');
-            return;
-          }
-          if (!confirm('Delete this file?')) return;
-          const path = btn.dataset.path;
-          await deleteObject(ref(storage, path));
-          showToast('File deleted.');
-          loadFiles();
-        });
-      });
-
-    } catch (err) {
-      grid.innerHTML = `<div class="error-msg">⚠ Could not load files. Check Firebase config.</div>`;
-      console.error(err);
-    }
-  }
-
-  // ─── UPLOAD ───────────────────────────────────────────
-  function setupUpload() {
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('file-input');
-    const progressWrap = document.getElementById('progress-wrap');
-    const progressBar = document.getElementById('progress-bar');
-    const progressText = document.getElementById('progress-text');
-
-    dropzone.addEventListener('click', () => fileInput.click());
-
-    dropzone.addEventListener('dragover', e => {
-      e.preventDefault();
-      dropzone.classList.add('drag-over');
-    });
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
-    dropzone.addEventListener('drop', e => {
-      e.preventDefault();
-      dropzone.classList.remove('drag-over');
-      uploadFiles(e.dataTransfer.files);
-    });
-
-    fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
-
-    function uploadFiles(files) {
-      if (!files || files.length === 0) return;
-
-      Array.from(files).forEach(file => {
-        const storageRef = ref(storage, `vault/${file.name}`);
-        const task = uploadBytesResumable(storageRef, file);
-
-        progressWrap.style.display = 'block';
-        progressText.textContent = `Uploading: ${file.name}`;
-
-        task.on('state_changed',
-          snap => {
-            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-            progressBar.style.width = pct + '%';
-            progressText.textContent = `${file.name} — ${pct}%`;
-          },
-          err => {
-            showToast('Upload failed: ' + err.message);
-            progressWrap.style.display = 'none';
-          },
-          () => {
-            showToast(`✓ ${file.name} uploaded!`);
-            progressWrap.style.display = 'none';
-            progressBar.style.width = '0%';
-            fileInput.value = '';
-            loadFiles();
-          }
-        );
-      });
-    }
-  }
-
-  // ─── ADMIN LOGIN ──────────────────────────────────────
-  function setupAdmin() {
-    window.isAdmin = false;
-    const adminBtn = document.getElementById('admin-toggle');
-    const adminPanel = document.getElementById('admin-panel');
-    const adminPass = document.getElementById('admin-pass');
-    const adminLogin = document.getElementById('admin-login');
-    const adminStatus = document.getElementById('admin-status');
-
-    adminBtn.addEventListener('click', () => {
-      adminPanel.style.display = adminPanel.style.display === 'none' ? 'flex' : 'none';
-    });
-
-    adminLogin.addEventListener('click', () => {
-      if (adminPass.value === ADMIN_PASSWORD) {
-        window.isAdmin = true;
-        adminStatus.textContent = '✓ Admin mode ON';
-        adminStatus.style.color = '#4ade80';
-        adminPanel.style.display = 'none';
-        adminBtn.textContent = '🛡 Admin ✓';
-        showToast('Admin mode enabled. You can now delete files.');
-      } else {
-        adminStatus.textContent = '✗ Wrong password';
-        adminStatus.style.color = '#f87171';
-      }
-    });
-  }
-
-  // ─── TOAST ────────────────────────────────────────────
-  function showToast(msg) {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 3000);
-  }
+function toast(msg) {
+  const t = document.getElementById("toast");
+  if (!t) return;
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 3500);
+}
 </script>
 
 <style>
-  /* ── RESET & BASE ─────────────────────────────────── */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg: #0a0a0c;
-    --surface: #111116;
-    --surface2: #18181f;
-    --border: #2a2a36;
-    --gold: #c9a84c;
-    --gold-dim: #8b6d28;
-    --text: #e8e8ef;
-    --muted: #6b6b80;
-    --green: #4ade80;
-    --red: #f87171;
-    --radius: 12px;
-  }
-
-  body {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* ── BACKGROUND ───────────────────────────────────── */
-  body::before {
-    content: '';
-    position: fixed;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: radial-gradient(ellipse at 30% 20%, #1a1408 0%, transparent 50%),
-                radial-gradient(ellipse at 70% 80%, #0d0d1a 0%, transparent 50%);
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  /* ── LOADING ──────────────────────────────────────── */
-  #loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-    font-family: 'Space Mono', monospace;
-    color: var(--gold);
-    font-size: 14px;
-    letter-spacing: 3px;
-  }
-
-  /* ── VAULT APP ────────────────────────────────────── */
-  #vault-app {
-    display: none;
-    position: relative;
-    z-index: 1;
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 24px 20px 60px;
-  }
-
-  /* ── HEADER ───────────────────────────────────────── */
-  .vault-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 36px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-
-  .vault-logo {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .vault-logo-icon {
-    font-size: 28px;
-    filter: drop-shadow(0 0 8px rgba(201,168,76,0.5));
-  }
-
-  .vault-title {
-    font-family: 'Space Mono', monospace;
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--gold);
-    letter-spacing: 2px;
-  }
-
-  .vault-subtitle {
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 1px;
-    font-family: 'Space Mono', monospace;
-  }
-
-  .header-right {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .session-badge {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 12px;
-    font-family: 'Space Mono', monospace;
-    font-size: 12px;
-  }
-
-  .session-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 6px var(--green);
-    animation: pulse 2s infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  #session-timer {
-    color: var(--gold);
-    font-weight: 700;
-  }
-
-  /* ── ADMIN ────────────────────────────────────────── */
-  #admin-toggle {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--muted);
-    padding: 6px 12px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 12px;
-    font-family: 'DM Sans', sans-serif;
-    transition: all 0.2s;
-  }
-
-  #admin-toggle:hover { border-color: var(--gold); color: var(--gold); }
-
-  #admin-panel {
-    display: none;
-    align-items: center;
-    gap: 8px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    width: 100%;
-  }
-
-  #admin-pass {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 13px;
-    font-family: 'DM Sans', sans-serif;
-    outline: none;
-    flex: 1;
-  }
-
-  #admin-pass:focus { border-color: var(--gold); }
-
-  #admin-login {
-    background: var(--gold);
-    color: #000;
-    border: none;
-    padding: 7px 14px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 13px;
-    font-family: 'DM Sans', sans-serif;
-  }
-
-  #admin-status {
-    font-size: 12px;
-    font-family: 'Space Mono', monospace;
-    color: var(--muted);
-  }
-
-  /* ── UPLOAD ZONE ──────────────────────────────────── */
-  .upload-section {
-    margin-bottom: 32px;
-  }
-
-  .section-label {
-    font-family: 'Space Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 3px;
-    color: var(--muted);
-    text-transform: uppercase;
-    margin-bottom: 12px;
-  }
-
-  #dropzone {
-    border: 2px dashed var(--border);
-    border-radius: var(--radius);
-    padding: 40px 24px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.3s;
-    background: var(--surface);
-    position: relative;
-    overflow: hidden;
-  }
-
-  #dropzone::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(ellipse at 50% 0%, rgba(201,168,76,0.04) 0%, transparent 70%);
-    pointer-events: none;
-  }
-
-  #dropzone:hover, #dropzone.drag-over {
-    border-color: var(--gold);
-    background: var(--surface2);
-  }
-
-  #dropzone.drag-over {
-    box-shadow: 0 0 20px rgba(201,168,76,0.15);
-  }
-
-  .dropzone-icon { font-size: 40px; margin-bottom: 12px; }
-
-  .dropzone-text {
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--text);
-    margin-bottom: 4px;
-  }
-
-  .dropzone-sub {
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  #file-input { display: none; }
-
-  /* ── PROGRESS ─────────────────────────────────────── */
-  #progress-wrap {
-    display: none;
-    margin-top: 12px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 16px;
-  }
-
-  #progress-text {
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 8px;
-    font-family: 'Space Mono', monospace;
-  }
-
-  .progress-track {
-    background: var(--bg);
-    border-radius: 100px;
-    height: 6px;
-    overflow: hidden;
-  }
-
-  #progress-bar {
-    height: 100%;
-    background: linear-gradient(90deg, var(--gold-dim), var(--gold));
-    border-radius: 100px;
-    width: 0%;
-    transition: width 0.3s;
-  }
-
-  /* ── FILES SECTION ────────────────────────────────── */
-  .files-section { }
-
-  .files-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-
-  #refresh-btn {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    padding: 5px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    transition: all 0.2s;
-  }
-
-  #refresh-btn:hover { border-color: var(--gold); color: var(--gold); }
-
-  /* ── FILE GRID ────────────────────────────────────── */
-  #file-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 12px;
-  }
-
-  .file-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    transition: all 0.2s;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .file-card::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 3px;
-    background: var(--gold);
-    opacity: 0;
-    transition: opacity 0.2s;
-  }
-
-  .file-card:hover {
-    border-color: var(--border);
-    background: var(--surface2);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-  }
-
-  .file-card:hover::before { opacity: 1; }
-
-  .file-icon-wrap { font-size: 26px; flex-shrink: 0; }
-
-  .file-info { flex: 1; min-width: 0; }
-
-  .file-name {
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 3px;
-  }
-
-  .file-size {
-    font-size: 11px;
-    color: var(--muted);
-    font-family: 'Space Mono', monospace;
-  }
-
-  .file-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    align-items: flex-end;
-    flex-shrink: 0;
-  }
-
-  .btn-dl {
-    background: var(--gold);
-    color: #000;
-    text-decoration: none;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-    transition: opacity 0.2s;
-  }
-
-  .btn-dl:hover { opacity: 0.85; }
-
-  .btn-del {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    padding: 4px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-    transition: all 0.2s;
-  }
-
-  .btn-del:hover { border-color: var(--red); color: var(--red); }
-
-  /* ── EMPTY / LOADING / ERROR ──────────────────────── */
-  #empty-state {
-    display: none;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 60px 20px;
-    color: var(--muted);
-    text-align: center;
-    font-size: 14px;
-    gap: 10px;
-    border: 1px dashed var(--border);
-    border-radius: var(--radius);
-  }
-
-  #empty-state .empty-icon { font-size: 40px; }
-
-  .loading-files, .error-msg {
-    grid-column: 1 / -1;
-    text-align: center;
-    padding: 40px;
-    color: var(--muted);
-    font-family: 'Space Mono', monospace;
-    font-size: 12px;
-  }
-
-  /* ── TOAST ────────────────────────────────────────── */
-  #toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%) translateY(80px);
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-size: 13px;
-    transition: transform 0.3s ease;
-    z-index: 1000;
-    white-space: nowrap;
-    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
-  }
-
-  #toast.show { transform: translateX(-50%) translateY(0); }
-
-  /* ── BLOCKED PAGE ─────────────────────────────────── */
-  .blocked-screen {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-    background: #0a0a0c;
-  }
-
-  .blocked-inner {
-    text-align: center;
-    padding: 40px;
-  }
-
-  .lock-icon { font-size: 64px; margin-bottom: 20px; opacity: 0.4; }
-
-  .blocked-title {
-    font-family: 'Space Mono', monospace;
-    font-size: 22px;
-    color: #444;
-    margin-bottom: 12px;
-    letter-spacing: 3px;
-  }
-
-  .blocked-sub {
-    font-size: 14px;
-    color: #333;
-    line-height: 1.7;
-  }
-
-  .blocked-code {
-    font-family: 'Space Mono', monospace;
-    font-size: 80px;
-    font-weight: 700;
-    color: #1a1a1a;
-    margin-top: 30px;
-  }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#09090b; --s1:#111114; --s2:#18181d;
+  --br:#27272f; --gold:#d4a843; --gdim:#8b6d28;
+  --tx:#e4e4ef; --mu:#5a5a7a; --gn:#4ade80;
+  --rd:#f87171; --bl:#60a5fa; --r:12px;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+body::before{content:'';position:fixed;inset:0;
+  background:radial-gradient(ellipse 60% 40% at 5% 5%,rgba(212,168,67,.07) 0%,transparent 55%),
+             radial-gradient(ellipse 50% 50% at 95% 95%,rgba(96,165,250,.04) 0%,transparent 55%);
+  pointer-events:none;z-index:0}
+
+/* LOADING */
+#loading{display:flex;align-items:center;justify-content:center;height:100vh;
+  font-family:'Space Mono',monospace;color:var(--gold);font-size:12px;letter-spacing:4px}
+
+/* APP */
+#app{display:none;position:relative;z-index:1;max-width:1000px;margin:0 auto;padding:24px 18px 90px}
+
+/* HEADER */
+.hdr{display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--br);
+  flex-wrap:wrap;gap:12px}
+.hdr-logo{display:flex;align-items:center;gap:12px}
+.logo-icon{font-size:26px;filter:drop-shadow(0 0 10px rgba(212,168,67,.6))}
+.logo-title{font-family:'Space Mono',monospace;font-size:17px;font-weight:700;color:var(--gold);letter-spacing:2px}
+.logo-sub{font-family:'Space Mono',monospace;font-size:9px;color:var(--mu);letter-spacing:2px;margin-top:2px}
+.hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+.sess-badge{display:flex;align-items:center;gap:8px;
+  background:var(--s2);border:1px solid var(--br);border-radius:8px;padding:6px 12px;
+  font-family:'Space Mono',monospace;font-size:11px}
+.sess-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);
+  box-shadow:0 0 6px var(--gn);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+#timer{color:var(--gold);font-weight:700}
+
+#admin-btn{background:var(--s2);border:1px solid var(--br);color:var(--mu);
+  padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;
+  font-family:'DM Sans',sans-serif;transition:all .2s}
+#admin-btn:hover{border-color:var(--gold);color:var(--gold)}
+
+#admin-panel{display:none;align-items:center;gap:8px;
+  background:var(--s2);border:1px solid var(--br);border-radius:10px;
+  padding:12px 14px;width:100%;flex-wrap:wrap;margin-top:4px}
+#admin-pass{background:var(--bg);border:1px solid var(--br);color:var(--tx);
+  padding:7px 12px;border-radius:7px;font-size:13px;font-family:'DM Sans',sans-serif;
+  outline:none;flex:1;min-width:140px}
+#admin-pass:focus{border-color:var(--gold)}
+#admin-submit{background:var(--gold);color:#000;border:none;
+  padding:7px 16px;border-radius:7px;cursor:pointer;font-weight:600;
+  font-size:13px;font-family:'DM Sans',sans-serif}
+#admin-err{font-size:12px;font-family:'Space Mono',monospace;color:var(--rd)}
+
+/* BREADCRUMB */
+.bc-row{display:flex;align-items:center;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+.bc{font-family:'Space Mono',monospace;font-size:11px;color:var(--mu);cursor:pointer;
+  padding:3px 7px;border-radius:5px;transition:all .15s}
+.bc:hover{color:var(--gold);background:var(--s2)}
+.bc-sep{color:var(--br);font-size:13px}
+
+/* ADMIN BAR */
+#admin-bar{display:none;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+.tb-btn{background:var(--s2);border:1px solid var(--br);color:var(--tx);
+  padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px;
+  font-family:'DM Sans',sans-serif;transition:all .2s;display:flex;align-items:center;gap:6px}
+.tb-btn:hover{border-color:var(--gold);color:var(--gold)}
+.admin-tag{font-size:11px;color:var(--mu);font-family:'Space Mono',monospace}
+
+/* UPLOAD */
+#upload-zone{display:none;margin-bottom:24px}
+.sec-lbl{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:3px;
+  color:var(--mu);text-transform:uppercase;margin-bottom:10px}
+#dropzone{border:2px dashed var(--br);border-radius:var(--r);padding:34px 20px;
+  text-align:center;cursor:pointer;background:var(--s1);transition:all .3s;position:relative;overflow:hidden}
+#dropzone::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 50% 0%,rgba(212,168,67,.05) 0%,transparent 70%);
+  pointer-events:none}
+#dropzone:hover,#dropzone.dz-over{border-color:var(--gold);background:var(--s2);
+  box-shadow:0 0 20px rgba(212,168,67,.1)}
+.dz-icon{font-size:34px;margin-bottom:10px}
+.dz-txt{font-size:14px;font-weight:500;margin-bottom:4px}
+.dz-sub{font-size:12px;color:var(--mu)}
+#file-input{display:none}
+#prog-wrap{display:none;margin-top:10px;background:var(--s1);
+  border:1px solid var(--br);border-radius:8px;padding:12px 14px}
+#prog-txt{font-size:11px;color:var(--mu);margin-bottom:6px;font-family:'Space Mono',monospace}
+.prog-track{background:var(--bg);border-radius:100px;height:5px;overflow:hidden}
+#prog-bar{height:100%;background:linear-gradient(90deg,var(--gdim),var(--gold));
+  border-radius:100px;width:0%;transition:width .3s}
+
+/* FILES */
+.files-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+#refresh{background:none;border:1px solid var(--br);color:var(--mu);
+  padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+#refresh:hover{border-color:var(--gold);color:var(--gold)}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+
+/* CARDS */
+.card{background:var(--s1);border:1px solid var(--br);border-radius:var(--r);
+  overflow:hidden;transition:all .2s;position:relative}
+.card:hover{background:var(--s2);border-color:#3a3a4a;transform:translateY(-2px);
+  box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.card.pinned{border-color:var(--gdim)}
+.folder-card{display:flex;align-items:center;gap:10px;padding:14px;cursor:pointer}
+.folder-card:hover{border-color:var(--gold)}
+.file-card .card-row{display:flex;align-items:center;gap:10px;padding:12px}
+
+.pin-dot{position:absolute;top:7px;right:8px;font-size:13px}
+.img-thumb{width:100%;height:130px;background-size:cover;background-position:center;background-color:var(--s2)}
+.card-icon{font-size:24px;flex-shrink:0}
+.card-info{flex:1;min-width:0}
+.card-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;cursor:pointer}
+.card-meta{font-size:11px;color:var(--mu);font-family:'Space Mono',monospace}
+.card-actions{display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0}
+
+.btn-dl{background:var(--gold);color:#000;text-decoration:none;
+  padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;white-space:nowrap;transition:opacity .2s}
+.btn-dl:hover{opacity:.8}
+.btn-play{background:var(--bl);color:#000;border:none;
+  padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn-pin{background:none;border:1px solid var(--br);color:var(--mu);
+  padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
+.btn-pin:hover{border-color:var(--gold)}
+.btn-del{background:none;border:1px solid var(--br);color:var(--mu);
+  padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
+.btn-del:hover{border-color:var(--rd);color:var(--rd)}
+
+/* EMPTY / MSGS */
+#empty{display:none;flex-direction:column;align-items:center;justify-content:center;
+  padding:60px;color:var(--mu);text-align:center;gap:10px;
+  border:1px dashed var(--br);border-radius:var(--r)}
+.ei{font-size:40px}
+.loading-msg,.err-msg{grid-column:1/-1;text-align:center;padding:50px;
+  color:var(--mu);font-family:'Space Mono',monospace;font-size:11px;line-height:1.9}
+
+/* AUDIO PLAYER */
+#aud-player{display:none;position:fixed;bottom:0;left:0;right:0;
+  background:var(--s2);border-top:1px solid var(--br);
+  padding:12px 20px;align-items:center;gap:14px;z-index:999;flex-wrap:wrap}
+#aud-title{font-size:12px;color:var(--gold);font-family:'Space Mono',monospace;flex:1;min-width:100px}
+#aud-el{flex:2;min-width:180px;height:32px;accent-color:var(--gold)}
+#aud-close{background:none;border:1px solid var(--br);color:var(--mu);
+  padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px}
+#aud-close:hover{color:var(--rd);border-color:var(--rd)}
+
+/* TOAST */
+#toast{position:fixed;bottom:72px;left:50%;
+  transform:translateX(-50%) translateY(80px);
+  background:var(--s2);border:1px solid var(--br);color:var(--tx);
+  padding:10px 20px;border-radius:8px;font-size:13px;
+  transition:transform .3s ease;z-index:1001;white-space:nowrap;
+  box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+/* BLOCKED */
+.block-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg)}
+.block-inner{text-align:center;padding:40px}
+.block-icon{font-size:60px;opacity:.25;margin-bottom:20px}
+.block-title{font-family:'Space Mono',monospace;font-size:20px;color:#2a2a2a;letter-spacing:4px;margin-bottom:12px}
+.block-sub{font-size:13px;color:#222;line-height:1.8}
+.block-code{font-family:'Space Mono',monospace;font-size:90px;font-weight:700;color:#111;margin-top:20px}
 </style>
 </head>
 <body>
 
 <div id="loading">VAULT — INITIALIZING…</div>
 
-<div id="vault-app">
+<div id="app">
 
   <!-- HEADER -->
-  <header class="vault-header">
-    <div class="vault-logo">
-      <div class="vault-logo-icon">🔐</div>
+  <header class="hdr">
+    <div class="hdr-logo">
+      <div class="logo-icon">🔐</div>
       <div>
-        <div class="vault-title">PRIVATE VAULT</div>
-        <div class="vault-subtitle">SECURE FILE STORAGE</div>
+        <div class="logo-title">PRIVATE VAULT</div>
+        <div class="logo-sub">SECURE FILE STORAGE</div>
       </div>
     </div>
-
-    <div class="header-right">
-      <div class="session-badge">
-        <div class="session-dot"></div>
-        <span style="color:var(--muted); font-size:11px;">SESSION</span>
-        <span id="session-timer">00:00:00</span>
+    <div class="hdr-right">
+      <div class="sess-badge">
+        <div class="sess-dot"></div>
+        <span style="color:var(--mu);font-size:10px">SESSION</span>
+        <span id="timer">--:--:--</span>
       </div>
-      <button id="admin-toggle">🛡 Admin</button>
+      <button id="admin-btn">🛡 Admin</button>
     </div>
-
-    <!-- Admin panel (full width below on mobile) -->
     <div id="admin-panel">
       <input type="password" id="admin-pass" placeholder="Admin password…">
-      <button id="admin-login">Unlock</button>
-      <span id="admin-status"></span>
+      <button id="admin-submit">Unlock</button>
+      <span id="admin-err"></span>
     </div>
   </header>
 
-  <!-- UPLOAD SECTION -->
-  <div class="upload-section">
-    <div class="section-label">Upload Files</div>
+  <!-- BREADCRUMB -->
+  <div class="bc-row" id="breadcrumb"></div>
+
+  <!-- ADMIN BAR -->
+  <div id="admin-bar">
+    <button class="tb-btn" id="new-folder-btn">📁 New Folder</button>
+    <span class="admin-tag">Admin Mode Active — Only you can upload & delete</span>
+  </div>
+
+  <!-- UPLOAD (admin only) -->
+  <div id="upload-zone">
+    <div class="sec-lbl">Upload to Current Folder</div>
     <div id="dropzone">
       <input type="file" id="file-input" multiple accept="*/*">
-      <div class="dropzone-icon">☁️</div>
-      <div class="dropzone-text">Drag & drop files here, or click to browse</div>
-      <div class="dropzone-sub">Photos, Videos, Audio, Documents — any format supported</div>
+      <div class="dz-icon">☁️</div>
+      <div class="dz-txt">Drag & drop or click to upload</div>
+      <div class="dz-sub">Photos · Videos · Audio · Docs · Any format</div>
     </div>
-    <div id="progress-wrap">
-      <div id="progress-text">Uploading…</div>
-      <div class="progress-track">
-        <div id="progress-bar"></div>
-      </div>
+    <div id="prog-wrap">
+      <div id="prog-txt">Uploading…</div>
+      <div class="prog-track"><div id="prog-bar"></div></div>
     </div>
   </div>
 
-  <!-- FILES SECTION -->
-  <div class="files-section">
-    <div class="files-header">
-      <div class="section-label" style="margin-bottom:0">Stored Files</div>
-      <button id="refresh-btn" onclick="location.reload()">↻ Refresh</button>
+  <!-- FILES -->
+  <div>
+    <div class="files-hdr">
+      <div class="sec-lbl" style="margin-bottom:0">Files & Folders</div>
+      <button id="refresh" onclick="location.reload()">↻ Refresh</button>
     </div>
-
-    <div id="file-grid"></div>
-    <div id="empty-state">
-      <div class="empty-icon">📭</div>
-      <div>Vault is empty — upload your first file above</div>
+    <div id="grid"></div>
+    <div id="empty">
+      <div class="ei">📭</div>
+      <div>This folder is empty</div>
+      <div style="font-size:11px">Log in as Admin to upload files or create folders</div>
     </div>
   </div>
 
+</div>
+
+<!-- AUDIO PLAYER -->
+<div id="aud-player">
+  <span id="aud-title">No track</span>
+  <audio id="aud-el" controls><source id="aud-src" src=""></audio>
+  <button id="aud-close">✕ Close</button>
 </div>
 
 <!-- TOAST -->
