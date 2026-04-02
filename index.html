@@ -6,15 +6,20 @@
 <title>Private Vault</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 
-<script type="module">
-import { initializeApp }
-  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getStorage, ref as sRef, uploadBytesResumable, getDownloadURL, listAll, deleteObject, getMetadata }
-  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
-import { getDatabase, ref as dbRef, set, get, remove }
-  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+<!-- Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-// ─── CONFIG ────────────────────────────────
+<script type="module">
+import { initializeApp }        from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref as dbRef, set, get, remove }
+                                 from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// ─── SUPABASE CONFIG ───────────────────────
+const SUPA_URL = "https://rklbjowkprxkesfufbbh.supabase.co";
+const SUPA_KEY = "sb_publishable_k4U3FvtIxuBxaCV7ktFPsg_bm5U4A-n";
+const BUCKET   = "vault";
+
+// ─── FIREBASE CONFIG (DB only) ─────────────
 const firebaseConfig = {
   apiKey:            "AIzaSyDShjpMdRUbxt3sKCCSEi4ZsUxXwGtPvGM",
   authDomain:        "product-e47f0.firebaseapp.com",
@@ -29,54 +34,35 @@ const SECRET_TOKEN   = "vault2024xK9mP3qR7nL";
 const ADMIN_PASSWORD = "admin";
 const SESSION_MS     = 24 * 60 * 60 * 1000;
 
-const app     = initializeApp(firebaseConfig);
-const storage = getStorage(app);
-const db      = getDatabase(app);
+// Init
+const supa  = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+const fbApp = initializeApp(firebaseConfig);
+const db    = getDatabase(fbApp);
 
 // ─── STATE ─────────────────────────────────
 let isAdmin     = false;
-let currentPath = "";   // e.g. "photos" or "photos/trips"
+let currentPath = "";
 
 // ─── DEVICE ID ─────────────────────────────
 function getDeviceId() {
   let id = localStorage.getItem("vaultDevice");
-  if (!id) {
-    id = "dv_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    localStorage.setItem("vaultDevice", id);
-  }
+  if (!id) { id = "dv_" + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("vaultDevice", id); }
   return id;
 }
-
 async function registerVisit() {
-  const did  = getDeviceId();
-  const ref  = dbRef(db, "visitors/" + did);
-  const snap = await get(ref);
-  const now  = Date.now();
-  const back = snap.exists();
-  await set(ref, {
-    firstSeen: back ? snap.val().firstSeen : now,
-    lastSeen:  now,
-    visits:    back ? (snap.val().visits || 1) + 1 : 1
-  });
+  const did = getDeviceId(), ref = dbRef(db, "visitors/" + did), snap = await get(ref), now = Date.now(), back = snap.exists();
+  await set(ref, { firstSeen: back ? snap.val().firstSeen : now, lastSeen: now, visits: back ? (snap.val().visits||1)+1 : 1 });
   return { back, data: back ? snap.val() : null };
 }
 
-// ─── ACCESS ─────────────────────────────────
+// ─── ACCESS ────────────────────────────────
 function checkAccess() {
   const p = new URLSearchParams(window.location.hash.slice(1));
-  if (p.get("access") === SECRET_TOKEN) {
-    localStorage.setItem("vaultExp", Date.now() + SESSION_MS);
-    history.replaceState(null, "", location.pathname);
-    return true;
-  }
+  if (p.get("access") === SECRET_TOKEN) { localStorage.setItem("vaultExp", Date.now()+SESSION_MS); history.replaceState(null,"",location.pathname); return true; }
   const exp = localStorage.getItem("vaultExp");
   return exp && Date.now() < +exp;
 }
-
-function getRemaining() {
-  const exp = localStorage.getItem("vaultExp");
-  return exp ? Math.max(0, +exp - Date.now()) : 0;
-}
+function getRemaining() { const e=localStorage.getItem("vaultExp"); return e?Math.max(0,+e-Date.now()):0; }
 
 // ─── BOOT ──────────────────────────────────
 window.addEventListener("DOMContentLoaded", async () => {
@@ -86,59 +72,34 @@ window.addEventListener("DOMContentLoaded", async () => {
 });
 
 function blocked() {
-  document.body.innerHTML = `
-    <div class="block-screen">
-      <div class="block-inner">
-        <div class="block-icon">🔒</div>
-        <h1 class="block-title">ACCESS DENIED</h1>
-        <p class="block-sub">This vault is private.<br>You need a special link to enter.</p>
-        <div class="block-code">403</div>
-      </div>
-    </div>`;
+  document.body.innerHTML = `<div class="block-screen"><div class="block-inner"><div class="block-icon">🔒</div><h1 class="block-title">ACCESS DENIED</h1><p class="block-sub">This vault is private.<br>You need a special link to enter.</p><div class="block-code">403</div></div></div>`;
 }
 
 function showVault(isReturning, visitorData) {
   document.getElementById("loading").style.display = "none";
   document.getElementById("app").style.display     = "block";
-
   if (isReturning && visitorData) {
     const d = new Date(visitorData.firstSeen).toLocaleDateString("en-IN");
-    toast(`👋 Welcome back! Visit #${visitorData.visits} — member since ${d}`);
-  } else {
-    toast("🎉 Welcome! First time entering the Vault.");
-  }
-
-  startTimer();
-  setupAdminUI();
-  loadFolder();
-  setupUpload();
+    toast(`👋 Welcome back! Visit #${visitorData.visits} — since ${d}`);
+  } else toast("🎉 Welcome! First time entering the Vault.");
+  startTimer(); setupAdminUI(); loadFolder(); setupUpload();
 }
 
 // ─── TIMER ─────────────────────────────────
 function startTimer() {
   const el = document.getElementById("timer");
-  const tick = () => {
-    const r = getRemaining();
-    if (!r) { localStorage.removeItem("vaultExp"); location.reload(); return; }
-    const h = Math.floor(r / 3600000), m = Math.floor((r % 3600000) / 60000), s = Math.floor((r % 60000) / 1000);
-    el.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
-  };
+  const tick = () => { const r=getRemaining(); if(!r){localStorage.removeItem("vaultExp");location.reload();return;} const h=Math.floor(r/3600000),m=Math.floor((r%3600000)/60000),s=Math.floor((r%60000)/1000); el.textContent=`${pad(h)}:${pad(m)}:${pad(s)}`; };
   tick(); setInterval(tick, 1000);
 }
-const pad = n => String(n).padStart(2, "0");
+const pad = n => String(n).padStart(2,"0");
 
-// ─── ADMIN UI ──────────────────────────────
+// ─── ADMIN ─────────────────────────────────
 function setupAdminUI() {
-  document.getElementById("admin-btn").onclick = () => {
-    if (isAdmin) { logoutAdmin(); return; }
-    const p = document.getElementById("admin-panel");
-    p.style.display = p.style.display === "none" ? "flex" : "none";
-  };
+  document.getElementById("admin-btn").onclick = () => { if(isAdmin){logoutAdmin();return;} const p=document.getElementById("admin-panel"); p.style.display=p.style.display==="none"?"flex":"none"; };
   document.getElementById("admin-submit").onclick = tryLogin;
-  document.getElementById("admin-pass").onkeydown = e => e.key === "Enter" && tryLogin();
+  document.getElementById("admin-pass").onkeydown = e => e.key==="Enter"&&tryLogin();
   document.getElementById("new-folder-btn").onclick = createFolder;
 }
-
 function tryLogin() {
   if (document.getElementById("admin-pass").value === ADMIN_PASSWORD) {
     isAdmin = true;
@@ -146,376 +107,218 @@ function tryLogin() {
     document.getElementById("admin-btn").innerHTML        = "🛡️ Admin <span style='color:#4ade80'>●</span>";
     document.getElementById("upload-zone").style.display  = "block";
     document.getElementById("admin-bar").style.display    = "flex";
-    toast("✓ Admin mode enabled");
-    loadFolder();
-  } else {
-    document.getElementById("admin-err").textContent = "✗ Wrong password";
-    setTimeout(() => document.getElementById("admin-err").textContent = "", 2000);
-  }
+    toast("✓ Admin mode enabled"); loadFolder();
+  } else { document.getElementById("admin-err").textContent="✗ Wrong password"; setTimeout(()=>document.getElementById("admin-err").textContent="",2000); }
 }
-
 function logoutAdmin() {
-  isAdmin = false;
-  document.getElementById("admin-btn").textContent       = "🛡 Admin";
-  document.getElementById("upload-zone").style.display   = "none";
-  document.getElementById("admin-bar").style.display     = "none";
+  isAdmin=false; document.getElementById("admin-btn").textContent="🛡 Admin";
+  document.getElementById("upload-zone").style.display="none"; document.getElementById("admin-bar").style.display="none";
   toast("Admin mode off"); loadFolder();
 }
 
 // ─── FOLDER NAV ────────────────────────────
-function storagePath(name) {
-  return "vault/" + (currentPath ? currentPath + "/" : "") + name;
-}
+function storagePath(name) { return currentPath ? `${currentPath}/${name}` : name; }
 
 function buildBreadcrumb() {
-  const bc    = document.getElementById("breadcrumb");
-  const parts = currentPath ? currentPath.split("/") : [];
-  let html = `<span class="bc" data-p="">🏠 Home</span>`;
-  let built = "";
-  parts.forEach(p => {
-    built += (built ? "/" : "") + p;
-    html  += ` <span class="bc-sep">›</span><span class="bc" data-p="${built}">${p}</span>`;
-  });
-  bc.innerHTML = html;
-  bc.querySelectorAll(".bc").forEach(el =>
-    el.addEventListener("click", () => { currentPath = el.dataset.p; loadFolder(); })
-  );
+  const bc=document.getElementById("breadcrumb"), parts=currentPath?currentPath.split("/"):[];
+  let html=`<span class="bc" data-p="">🏠 Home</span>`, built="";
+  parts.forEach(p => { built+=(built?"/":"")+p; html+=` <span class="bc-sep">›</span><span class="bc" data-p="${built}">${p}</span>`; });
+  bc.innerHTML=html;
+  bc.querySelectorAll(".bc").forEach(el=>el.addEventListener("click",()=>{currentPath=el.dataset.p;loadFolder();}));
 }
 
 // ─── LOAD FOLDER ───────────────────────────
 async function loadFolder() {
   buildBreadcrumb();
-  const grid  = document.getElementById("grid");
-  const empty = document.getElementById("empty");
-  grid.innerHTML = `<div class="loading-msg">Loading…</div>`;
-  empty.style.display = "none";
+  const grid=document.getElementById("grid"), empty=document.getElementById("empty");
+  grid.innerHTML=`<div class="loading-msg">Loading…</div>`; empty.style.display="none";
 
   try {
-    const path   = "vault/" + (currentPath ? currentPath + "/" : "");
-    const res    = await listAll(sRef(storage, path));
-    const pSnap  = await get(dbRef(db, "pins"));
-    const pins   = pSnap.exists() ? pSnap.val() : {};
+    // List files from Supabase
+    const prefix = currentPath ? currentPath+"/" : "";
+    const { data: items, error } = await supa.storage.from(BUCKET).list(currentPath||"", { limit:200, sortBy:{column:"name",order:"asc"} });
+    if (error) throw error;
 
-    const folders = res.prefixes
-      .filter(p => p.name !== ".keep")
-      .map(p => ({ kind: "folder", name: p.name, pinned: !!pins[`f_${currentPath}_${p.name}`] }));
+    // Get pins from Firebase
+    const pSnap = await get(dbRef(db,"pins")), pins = pSnap.exists()?pSnap.val():{};
 
-    const files = (await Promise.all(res.items
-      .filter(i => i.name !== ".keep")
-      .map(async i => {
-        try {
-          const [url, meta] = await Promise.all([getDownloadURL(i), getMetadata(i)]);
-          return { kind: "file", name: i.name, url, size: meta.size, ctype: meta.contentType, ref: i, pinned: !!pins[`fi_${currentPath}_${i.name}`] };
-        } catch { return null; }
-      }))).filter(Boolean);
+    const folders=[], files=[];
+    (items||[]).forEach(item => {
+      if (item.id === null) {
+        // folder (virtual)
+        folders.push({ kind:"folder", name:item.name, pinned:!!pins[`f_${currentPath}_${item.name}`] });
+      } else if (item.name !== ".keep") {
+        const url = supa.storage.from(BUCKET).getPublicUrl(prefix+item.name).data.publicUrl;
+        files.push({ kind:"file", name:item.name, url, size:item.metadata?.size, ctype:item.metadata?.mimetype, pinned:!!pins[`fi_${currentPath}_${item.name}`] });
+      }
+    });
 
-    const all = [...folders, ...files].sort((a, b) => {
-      if (a.pinned !== b.pinned) return +b.pinned - +a.pinned;
-      if (a.kind   !== b.kind)   return a.kind === "folder" ? -1 : 1;
+    const all = [...folders,...files].sort((a,b)=>{
+      if(a.pinned!==b.pinned) return +b.pinned - +a.pinned;
+      if(a.kind!==b.kind) return a.kind==="folder"?-1:1;
       return a.name.localeCompare(b.name);
     });
 
-    if (!all.length) { grid.innerHTML = ""; empty.style.display = "flex"; return; }
-
-    grid.innerHTML = "";
-    all.forEach(item => grid.appendChild(item.kind === "folder" ? folderCard(item) : fileCard(item)));
-  } catch (e) {
-    grid.innerHTML = `<div class="err-msg">⚠ Error: ${e.message}<br><br><small>Fix Firebase Storage Rules → allow read, write: if true</small></div>`;
+    if (!all.length) { grid.innerHTML=""; empty.style.display="flex"; return; }
+    grid.innerHTML="";
+    all.forEach(item => grid.appendChild(item.kind==="folder"?folderCard(item):fileCard(item)));
+  } catch(e) {
+    grid.innerHTML=`<div class="err-msg">⚠ Error: ${e.message}<br><br><small>Make sure bucket "vault" is created and set to PUBLIC in Supabase Storage.</small></div>`;
+    console.error(e);
   }
 }
 
 // ─── FOLDER CARD ───────────────────────────
 function folderCard(item) {
-  const d = document.createElement("div");
-  d.className = "card folder-card" + (item.pinned ? " pinned" : "");
-  d.innerHTML = `
-    ${item.pinned ? `<div class="pin-dot">📌</div>` : ""}
-    <div class="card-icon">📁</div>
-    <div class="card-info">
-      <div class="card-name">${item.name}</div>
-      <div class="card-meta">Folder</div>
-    </div>
-    <div class="card-actions">
-      ${isAdmin ? `
-        <button class="btn-pin">${item.pinned ? "📌" : "📍"}</button>
-        <button class="btn-del">🗑</button>` : ""}
-    </div>`;
-  d.querySelector(".card-icon").onclick = () => openFolder(item.name);
-  d.querySelector(".card-name").onclick = () => openFolder(item.name);
-  if (isAdmin) {
-    d.querySelector(".btn-pin").onclick = () => togglePin("f", item.name, item.pinned);
-    d.querySelector(".btn-del").onclick = () => delFolder(item.name);
-  }
+  const d=document.createElement("div"); d.className="card folder-card"+(item.pinned?" pinned":"");
+  d.innerHTML=`${item.pinned?`<div class="pin-dot">📌</div>`:""}<div class="card-icon">📁</div><div class="card-info"><div class="card-name">${item.name}</div><div class="card-meta">Folder</div></div><div class="card-actions">${isAdmin?`<button class="btn-pin">${item.pinned?"📌":"📍"}</button><button class="btn-del">🗑</button>`:""}</div>`;
+  d.querySelector(".card-icon").onclick = () => { currentPath=currentPath?`${currentPath}/${item.name}`:item.name; loadFolder(); };
+  d.querySelector(".card-name").onclick = () => { currentPath=currentPath?`${currentPath}/${item.name}`:item.name; loadFolder(); };
+  if(isAdmin){ d.querySelector(".btn-pin").onclick=()=>togglePin("f",item.name,item.pinned); d.querySelector(".btn-del").onclick=()=>delFolder(item.name); }
   return d;
-}
-
-function openFolder(name) {
-  currentPath = currentPath ? `${currentPath}/${name}` : name;
-  loadFolder();
 }
 
 // ─── FILE CARD ─────────────────────────────
 function fileCard(item) {
-  const d    = document.createElement("div");
-  const isImg = item.ctype?.startsWith("image/");
-  const isAud = item.ctype?.startsWith("audio/");
-  d.className = "card file-card" + (item.pinned ? " pinned" : "");
-  d.innerHTML = `
-    ${item.pinned ? `<div class="pin-dot">📌</div>` : ""}
-    ${isImg ? `<div class="img-thumb" style="background-image:url('${item.url}')"></div>` : ""}
-    <div class="card-row">
-      <div class="card-icon">${fileIcon(item.name, item.ctype)}</div>
-      <div class="card-info">
-        <div class="card-name" title="${item.name}">${item.name}</div>
-        <div class="card-meta">${fmtSize(item.size)}</div>
-      </div>
-      <div class="card-actions">
-        ${isAud ? `<button class="btn-play" data-url="${item.url}" data-name="${item.name}">▶ Play</button>` : ""}
-        <a href="${item.url}" target="_blank" download="${item.name}" class="btn-dl">⬇ Save</a>
-        ${isAdmin ? `
-          <button class="btn-pin">${item.pinned ? "📌" : "📍"}</button>
-          <button class="btn-del">🗑</button>` : ""}
-      </div>
-    </div>`;
-  if (isAdmin) {
-    d.querySelector(".btn-pin").onclick = () => togglePin("fi", item.name, item.pinned);
-    d.querySelector(".btn-del").onclick = () => delFile(item.ref, item.name);
-  }
-  d.querySelector(".btn-play")?.addEventListener("click", e => {
-    playAudio(e.currentTarget.dataset.url, e.currentTarget.dataset.name);
-  });
+  const d=document.createElement("div"), isImg=item.ctype?.startsWith("image/"), isAud=item.ctype?.startsWith("audio/");
+  d.className="card file-card"+(item.pinned?" pinned":"");
+  d.innerHTML=`${item.pinned?`<div class="pin-dot">📌</div>`:""}${isImg?`<div class="img-thumb" style="background-image:url('${item.url}')"></div>`:""}<div class="card-row"><div class="card-icon">${fileIcon(item.name,item.ctype)}</div><div class="card-info"><div class="card-name" title="${item.name}">${item.name}</div><div class="card-meta">${fmtSize(item.size)}</div></div><div class="card-actions">${isAud?`<button class="btn-play" data-url="${item.url}" data-name="${item.name}">▶ Play</button>`:""}<a href="${item.url}" target="_blank" download="${item.name}" class="btn-dl">⬇ Save</a>${isAdmin?`<button class="btn-pin">${item.pinned?"📌":"📍"}</button><button class="btn-del">🗑</button>`:""}</div></div>`;
+  if(isAdmin){ d.querySelector(".btn-pin").onclick=()=>togglePin("fi",item.name,item.pinned); d.querySelector(".btn-del").onclick=()=>delFile(item.name); }
+  d.querySelector(".btn-play")?.addEventListener("click",e=>playAudio(e.currentTarget.dataset.url,e.currentTarget.dataset.name));
   return d;
 }
 
-// ─── AUDIO PLAYER ──────────────────────────
-function playAudio(url, name) {
-  document.getElementById("aud-title").textContent = name;
-  document.getElementById("aud-src").src = url;
-  document.getElementById("aud-player").style.display = "flex";
-  const el = document.getElementById("aud-el"); el.load(); el.play();
+// ─── AUDIO ─────────────────────────────────
+function playAudio(url,name) {
+  document.getElementById("aud-title").textContent=name;
+  document.getElementById("aud-src").src=url;
+  document.getElementById("aud-player").style.display="flex";
+  const el=document.getElementById("aud-el"); el.load(); el.play();
 }
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("aud-close").onclick = () => {
-    document.getElementById("aud-player").style.display = "none";
-    document.getElementById("aud-el").pause();
-  };
-});
+document.addEventListener("DOMContentLoaded",()=>{ document.getElementById("aud-close").onclick=()=>{ document.getElementById("aud-player").style.display="none"; document.getElementById("aud-el").pause(); }; });
 
 // ─── PIN ───────────────────────────────────
-async function togglePin(type, name, wasPinned) {
-  const key = `${type}_${currentPath}_${name}`;
-  wasPinned ? await remove(dbRef(db, `pins/${key}`)) : await set(dbRef(db, `pins/${key}`), true);
-  toast(wasPinned ? "Unpinned" : "📌 Pinned to top!");
-  loadFolder();
+async function togglePin(type,name,wasPinned) {
+  const key=`${type}_${currentPath}_${name}`;
+  wasPinned?await remove(dbRef(db,`pins/${key}`)):await set(dbRef(db,`pins/${key}`),true);
+  toast(wasPinned?"Unpinned":"📌 Pinned!"); loadFolder();
 }
 
 // ─── DELETE ────────────────────────────────
-async function delFile(ref, name) {
-  if (!confirm(`Delete "${name}"?`)) return;
-  await deleteObject(ref); toast("🗑 Deleted"); loadFolder();
+async function delFile(name) {
+  if(!confirm(`Delete "${name}"?`)) return;
+  const path = storagePath(name);
+  const { error } = await supa.storage.from(BUCKET).remove([path]);
+  if(error) { toast("Error: "+error.message); return; }
+  toast("🗑 Deleted"); loadFolder();
 }
-
 async function delFolder(name) {
-  if (!confirm(`Delete folder "${name}" and all its files?`)) return;
-  try {
-    const fp  = "vault/" + (currentPath ? `${currentPath}/${name}` : name);
-    const res = await listAll(sRef(storage, fp + "/"));
-    await Promise.all(res.items.map(i => deleteObject(i)));
-    toast("🗑 Folder deleted"); loadFolder();
-  } catch (e) { toast("Error: " + e.message); }
+  if(!confirm(`Delete folder "${name}" and all its files?`)) return;
+  const prefix = storagePath(name)+"/";
+  const { data } = await supa.storage.from(BUCKET).list(storagePath(name));
+  if(data?.length) await supa.storage.from(BUCKET).remove(data.map(f=>prefix+f.name));
+  toast("🗑 Folder deleted"); loadFolder();
 }
 
 // ─── CREATE FOLDER ─────────────────────────
 async function createFolder() {
-  const name = prompt("New folder name:");
-  if (!name?.trim()) return;
-  const clean = name.trim().replace(/[^a-zA-Z0-9_\-. ]/g, "_");
-  const ph    = sRef(storage, storagePath(clean + "/.keep"));
-  await uploadBytesResumable(ph, new Blob([""], { type: "text/plain" }));
+  const name=prompt("New folder name:"); if(!name?.trim()) return;
+  const clean=name.trim().replace(/[^a-zA-Z0-9_\-. ]/g,"_");
+  const { error } = await supa.storage.from(BUCKET).upload(storagePath(clean)+"/.keep", new Blob([""]),{contentType:"text/plain",upsert:true});
+  if(error) { toast("Error: "+error.message); return; }
   toast(`📁 Folder "${clean}" created`); loadFolder();
 }
 
 // ─── UPLOAD ────────────────────────────────
 function setupUpload() {
-  const dz   = document.getElementById("dropzone");
-  const inp  = document.getElementById("file-input");
-  dz.onclick = () => inp.click();
-  dz.ondragover = e => { e.preventDefault(); dz.classList.add("dz-over"); };
-  dz.ondragleave = () => dz.classList.remove("dz-over");
-  dz.ondrop = e => { e.preventDefault(); dz.classList.remove("dz-over"); upload(e.dataTransfer.files); };
-  inp.onchange = () => upload(inp.files);
+  const dz=document.getElementById("dropzone"), inp=document.getElementById("file-input");
+  dz.onclick=()=>inp.click();
+  dz.ondragover=e=>{e.preventDefault();dz.classList.add("dz-over");};
+  dz.ondragleave=()=>dz.classList.remove("dz-over");
+  dz.ondrop=e=>{e.preventDefault();dz.classList.remove("dz-over");upload(e.dataTransfer.files);};
+  inp.onchange=()=>upload(inp.files);
 }
 
-function upload(files) {
-  if (!files?.length) return;
-  let done = 0;
-  Array.from(files).forEach(file => {
-    const r    = sRef(storage, storagePath(file.name));
-    const task = uploadBytesResumable(r, file);
-    const wrap = document.getElementById("prog-wrap");
-    const bar  = document.getElementById("prog-bar");
-    const txt  = document.getElementById("prog-txt");
-    wrap.style.display = "block";
-    task.on("state_changed",
-      s => {
-        const p = Math.round(s.bytesTransferred / s.totalBytes * 100);
-        bar.style.width = p + "%";
-        txt.textContent = `${file.name} — ${p}%`;
-      },
-      e => { toast("Upload failed: " + e.message); wrap.style.display = "none"; console.error(e); },
-      () => {
-        done++;
-        toast(`✓ ${file.name} uploaded!`);
-        if (done === files.length) {
-          wrap.style.display = "none"; bar.style.width = "0%";
-          document.getElementById("file-input").value = "";
-          loadFolder();
-        }
-      }
-    );
-  });
+async function upload(files) {
+  if(!files?.length) return;
+  const wrap=document.getElementById("prog-wrap"), bar=document.getElementById("prog-bar"), txt=document.getElementById("prog-txt");
+  wrap.style.display="block";
+  let done=0;
+  for (const file of Array.from(files)) {
+    txt.textContent=`Uploading: ${file.name}…`;
+    bar.style.width="30%";
+    const path = storagePath(file.name);
+    const { error } = await supa.storage.from(BUCKET).upload(path, file, { upsert:true, contentType:file.type||"application/octet-stream" });
+    if(error) { toast("Upload failed: "+error.message); console.error(error); }
+    else { done++; bar.style.width="100%"; toast(`✓ ${file.name} uploaded!`); }
+  }
+  setTimeout(()=>{ wrap.style.display="none"; bar.style.width="0%"; document.getElementById("file-input").value=""; loadFolder(); },600);
 }
 
 // ─── HELPERS ───────────────────────────────
-function fileIcon(name, ctype) {
-  if (ctype?.startsWith("image/")) return "🖼️";
-  if (ctype?.startsWith("video/")) return "🎬";
-  if (ctype?.startsWith("audio/")) return "🎵";
-  if (ctype?.includes("pdf"))      return "📄";
-  if (ctype?.includes("word"))     return "📝";
-  if (ctype?.includes("sheet")||ctype?.includes("excel")) return "📊";
-  const e = name.split(".").pop().toLowerCase();
-  return {jpg:"🖼️",jpeg:"🖼️",png:"🖼️",gif:"🖼️",webp:"🖼️",mp4:"🎬",mov:"🎬",mkv:"🎬",
-          mp3:"🎵",wav:"🎵",aac:"🎵",flac:"🎵",m4a:"🎵",pdf:"📄",doc:"📝",docx:"📝",
-          xls:"📊",xlsx:"📊",zip:"🗜️",rar:"🗜️",txt:"📃"}[e] || "📁";
+function fileIcon(name,ctype) {
+  if(ctype?.startsWith("image/"))return"🖼️"; if(ctype?.startsWith("video/"))return"🎬"; if(ctype?.startsWith("audio/"))return"🎵";
+  if(ctype?.includes("pdf"))return"📄"; if(ctype?.includes("word"))return"📝"; if(ctype?.includes("sheet")||ctype?.includes("excel"))return"📊";
+  const e=name.split(".").pop().toLowerCase();
+  return{jpg:"🖼️",jpeg:"🖼️",png:"🖼️",gif:"🖼️",webp:"🖼️",mp4:"🎬",mov:"🎬",mkv:"🎬",mp3:"🎵",wav:"🎵",aac:"🎵",flac:"🎵",m4a:"🎵",pdf:"📄",doc:"📝",docx:"📝",xls:"📊",xlsx:"📊",zip:"🗜️",rar:"🗜️",txt:"📃"}[e]||"📁";
 }
-
-function fmtSize(b) {
-  if (!b) return "—";
-  if (b < 1024) return b + " B";
-  if (b < 1048576) return (b/1024).toFixed(1) + " KB";
-  if (b < 1073741824) return (b/1048576).toFixed(1) + " MB";
-  return (b/1073741824).toFixed(1) + " GB";
-}
-
-function toast(msg) {
-  const t = document.getElementById("toast");
-  if (!t) return;
-  t.textContent = msg; t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 3500);
-}
+function fmtSize(b) { if(!b)return"—"; if(b<1024)return b+" B"; if(b<1048576)return(b/1024).toFixed(1)+" KB"; if(b<1073741824)return(b/1048576).toFixed(1)+" MB"; return(b/1073741824).toFixed(1)+" GB"; }
+function toast(msg) { const t=document.getElementById("toast"); if(!t)return; t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),3500); }
 </script>
 
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#09090b; --s1:#111114; --s2:#18181d;
-  --br:#27272f; --gold:#d4a843; --gdim:#8b6d28;
-  --tx:#e4e4ef; --mu:#5a5a7a; --gn:#4ade80;
-  --rd:#f87171; --bl:#60a5fa; --r:12px;
-}
+:root{--bg:#09090b;--s1:#111114;--s2:#18181d;--br:#27272f;--gold:#d4a843;--gdim:#8b6d28;--tx:#e4e4ef;--mu:#5a5a7a;--gn:#4ade80;--rd:#f87171;--bl:#60a5fa;--r:12px}
 body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
-body::before{content:'';position:fixed;inset:0;
-  background:radial-gradient(ellipse 60% 40% at 5% 5%,rgba(212,168,67,.07) 0%,transparent 55%),
-             radial-gradient(ellipse 50% 50% at 95% 95%,rgba(96,165,250,.04) 0%,transparent 55%);
-  pointer-events:none;z-index:0}
-
-/* LOADING */
-#loading{display:flex;align-items:center;justify-content:center;height:100vh;
-  font-family:'Space Mono',monospace;color:var(--gold);font-size:12px;letter-spacing:4px}
-
-/* APP */
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse 60% 40% at 5% 5%,rgba(212,168,67,.07) 0%,transparent 55%),radial-gradient(ellipse 50% 50% at 95% 95%,rgba(96,165,250,.04) 0%,transparent 55%);pointer-events:none;z-index:0}
+#loading{display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Space Mono',monospace;color:var(--gold);font-size:12px;letter-spacing:4px}
 #app{display:none;position:relative;z-index:1;max-width:1000px;margin:0 auto;padding:24px 18px 90px}
-
-/* HEADER */
-.hdr{display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--br);
-  flex-wrap:wrap;gap:12px}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--br);flex-wrap:wrap;gap:12px}
 .hdr-logo{display:flex;align-items:center;gap:12px}
 .logo-icon{font-size:26px;filter:drop-shadow(0 0 10px rgba(212,168,67,.6))}
 .logo-title{font-family:'Space Mono',monospace;font-size:17px;font-weight:700;color:var(--gold);letter-spacing:2px}
 .logo-sub{font-family:'Space Mono',monospace;font-size:9px;color:var(--mu);letter-spacing:2px;margin-top:2px}
 .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-
-.sess-badge{display:flex;align-items:center;gap:8px;
-  background:var(--s2);border:1px solid var(--br);border-radius:8px;padding:6px 12px;
-  font-family:'Space Mono',monospace;font-size:11px}
-.sess-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);
-  box-shadow:0 0 6px var(--gn);animation:pulse 2s infinite}
+.sess-badge{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--br);border-radius:8px;padding:6px 12px;font-family:'Space Mono',monospace;font-size:11px}
+.sess-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);box-shadow:0 0 6px var(--gn);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 #timer{color:var(--gold);font-weight:700}
-
-#admin-btn{background:var(--s2);border:1px solid var(--br);color:var(--mu);
-  padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;
-  font-family:'DM Sans',sans-serif;transition:all .2s}
+#admin-btn{background:var(--s2);border:1px solid var(--br);color:var(--mu);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;transition:all .2s}
 #admin-btn:hover{border-color:var(--gold);color:var(--gold)}
-
-#admin-panel{display:none;align-items:center;gap:8px;
-  background:var(--s2);border:1px solid var(--br);border-radius:10px;
-  padding:12px 14px;width:100%;flex-wrap:wrap;margin-top:4px}
-#admin-pass{background:var(--bg);border:1px solid var(--br);color:var(--tx);
-  padding:7px 12px;border-radius:7px;font-size:13px;font-family:'DM Sans',sans-serif;
-  outline:none;flex:1;min-width:140px}
+#admin-panel{display:none;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--br);border-radius:10px;padding:12px 14px;width:100%;flex-wrap:wrap;margin-top:4px}
+#admin-pass{background:var(--bg);border:1px solid var(--br);color:var(--tx);padding:7px 12px;border-radius:7px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;flex:1;min-width:140px}
 #admin-pass:focus{border-color:var(--gold)}
-#admin-submit{background:var(--gold);color:#000;border:none;
-  padding:7px 16px;border-radius:7px;cursor:pointer;font-weight:600;
-  font-size:13px;font-family:'DM Sans',sans-serif}
+#admin-submit{background:var(--gold);color:#000;border:none;padding:7px 16px;border-radius:7px;cursor:pointer;font-weight:600;font-size:13px;font-family:'DM Sans',sans-serif}
 #admin-err{font-size:12px;font-family:'Space Mono',monospace;color:var(--rd)}
-
-/* BREADCRUMB */
 .bc-row{display:flex;align-items:center;gap:4px;margin-bottom:16px;flex-wrap:wrap}
-.bc{font-family:'Space Mono',monospace;font-size:11px;color:var(--mu);cursor:pointer;
-  padding:3px 7px;border-radius:5px;transition:all .15s}
+.bc{font-family:'Space Mono',monospace;font-size:11px;color:var(--mu);cursor:pointer;padding:3px 7px;border-radius:5px;transition:all .15s}
 .bc:hover{color:var(--gold);background:var(--s2)}
 .bc-sep{color:var(--br);font-size:13px}
-
-/* ADMIN BAR */
 #admin-bar{display:none;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
-.tb-btn{background:var(--s2);border:1px solid var(--br);color:var(--tx);
-  padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px;
-  font-family:'DM Sans',sans-serif;transition:all .2s;display:flex;align-items:center;gap:6px}
+.tb-btn{background:var(--s2);border:1px solid var(--br);color:var(--tx);padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif;transition:all .2s;display:flex;align-items:center;gap:6px}
 .tb-btn:hover{border-color:var(--gold);color:var(--gold)}
 .admin-tag{font-size:11px;color:var(--mu);font-family:'Space Mono',monospace}
-
-/* UPLOAD */
 #upload-zone{display:none;margin-bottom:24px}
-.sec-lbl{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:3px;
-  color:var(--mu);text-transform:uppercase;margin-bottom:10px}
-#dropzone{border:2px dashed var(--br);border-radius:var(--r);padding:34px 20px;
-  text-align:center;cursor:pointer;background:var(--s1);transition:all .3s;position:relative;overflow:hidden}
-#dropzone::before{content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse at 50% 0%,rgba(212,168,67,.05) 0%,transparent 70%);
-  pointer-events:none}
-#dropzone:hover,#dropzone.dz-over{border-color:var(--gold);background:var(--s2);
-  box-shadow:0 0 20px rgba(212,168,67,.1)}
-.dz-icon{font-size:34px;margin-bottom:10px}
-.dz-txt{font-size:14px;font-weight:500;margin-bottom:4px}
-.dz-sub{font-size:12px;color:var(--mu)}
+.sec-lbl{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:3px;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
+#dropzone{border:2px dashed var(--br);border-radius:var(--r);padding:34px 20px;text-align:center;cursor:pointer;background:var(--s1);transition:all .3s;position:relative;overflow:hidden}
+#dropzone::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(212,168,67,.05) 0%,transparent 70%);pointer-events:none}
+#dropzone:hover,#dropzone.dz-over{border-color:var(--gold);background:var(--s2);box-shadow:0 0 20px rgba(212,168,67,.1)}
+.dz-icon{font-size:34px;margin-bottom:10px}.dz-txt{font-size:14px;font-weight:500;margin-bottom:4px}.dz-sub{font-size:12px;color:var(--mu)}
 #file-input{display:none}
-#prog-wrap{display:none;margin-top:10px;background:var(--s1);
-  border:1px solid var(--br);border-radius:8px;padding:12px 14px}
+#prog-wrap{display:none;margin-top:10px;background:var(--s1);border:1px solid var(--br);border-radius:8px;padding:12px 14px}
 #prog-txt{font-size:11px;color:var(--mu);margin-bottom:6px;font-family:'Space Mono',monospace}
 .prog-track{background:var(--bg);border-radius:100px;height:5px;overflow:hidden}
-#prog-bar{height:100%;background:linear-gradient(90deg,var(--gdim),var(--gold));
-  border-radius:100px;width:0%;transition:width .3s}
-
-/* FILES */
+#prog-bar{height:100%;background:linear-gradient(90deg,var(--gdim),var(--gold));border-radius:100px;width:0%;transition:width .5s}
 .files-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-#refresh{background:none;border:1px solid var(--br);color:var(--mu);
-  padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+#refresh{background:none;border:1px solid var(--br);color:var(--mu);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
 #refresh:hover{border-color:var(--gold);color:var(--gold)}
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
-
-/* CARDS */
-.card{background:var(--s1);border:1px solid var(--br);border-radius:var(--r);
-  overflow:hidden;transition:all .2s;position:relative}
-.card:hover{background:var(--s2);border-color:#3a3a4a;transform:translateY(-2px);
-  box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.card{background:var(--s1);border:1px solid var(--br);border-radius:var(--r);overflow:hidden;transition:all .2s;position:relative}
+.card:hover{background:var(--s2);border-color:#3a3a4a;transform:translateY(-2px);box-shadow:0 6px 24px rgba(0,0,0,.4)}
 .card.pinned{border-color:var(--gdim)}
 .folder-card{display:flex;align-items:center;gap:10px;padding:14px;cursor:pointer}
 .folder-card:hover{border-color:var(--gold)}
 .file-card .card-row{display:flex;align-items:center;gap:10px;padding:12px}
-
 .pin-dot{position:absolute;top:7px;right:8px;font-size:13px}
 .img-thumb{width:100%;height:130px;background-size:cover;background-position:center;background-color:var(--s2)}
 .card-icon{font-size:24px;flex-shrink:0}
@@ -523,47 +326,23 @@ body::before{content:'';position:fixed;inset:0;
 .card-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;cursor:pointer}
 .card-meta{font-size:11px;color:var(--mu);font-family:'Space Mono',monospace}
 .card-actions{display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0}
-
-.btn-dl{background:var(--gold);color:#000;text-decoration:none;
-  padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;white-space:nowrap;transition:opacity .2s}
+.btn-dl{background:var(--gold);color:#000;text-decoration:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;white-space:nowrap;transition:opacity .2s}
 .btn-dl:hover{opacity:.8}
-.btn-play{background:var(--bl);color:#000;border:none;
-  padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
-.btn-pin{background:none;border:1px solid var(--br);color:var(--mu);
-  padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
+.btn-play{background:var(--bl);color:#000;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn-pin{background:none;border:1px solid var(--br);color:var(--mu);padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
 .btn-pin:hover{border-color:var(--gold)}
-.btn-del{background:none;border:1px solid var(--br);color:var(--mu);
-  padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
+.btn-del{background:none;border:1px solid var(--br);color:var(--mu);padding:3px 8px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .2s}
 .btn-del:hover{border-color:var(--rd);color:var(--rd)}
-
-/* EMPTY / MSGS */
-#empty{display:none;flex-direction:column;align-items:center;justify-content:center;
-  padding:60px;color:var(--mu);text-align:center;gap:10px;
-  border:1px dashed var(--br);border-radius:var(--r)}
+#empty{display:none;flex-direction:column;align-items:center;justify-content:center;padding:60px;color:var(--mu);text-align:center;gap:10px;border:1px dashed var(--br);border-radius:var(--r)}
 .ei{font-size:40px}
-.loading-msg,.err-msg{grid-column:1/-1;text-align:center;padding:50px;
-  color:var(--mu);font-family:'Space Mono',monospace;font-size:11px;line-height:1.9}
-
-/* AUDIO PLAYER */
-#aud-player{display:none;position:fixed;bottom:0;left:0;right:0;
-  background:var(--s2);border-top:1px solid var(--br);
-  padding:12px 20px;align-items:center;gap:14px;z-index:999;flex-wrap:wrap}
+.loading-msg,.err-msg{grid-column:1/-1;text-align:center;padding:50px;color:var(--mu);font-family:'Space Mono',monospace;font-size:11px;line-height:1.9}
+#aud-player{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--s2);border-top:1px solid var(--br);padding:12px 20px;align-items:center;gap:14px;z-index:999;flex-wrap:wrap}
 #aud-title{font-size:12px;color:var(--gold);font-family:'Space Mono',monospace;flex:1;min-width:100px}
 #aud-el{flex:2;min-width:180px;height:32px;accent-color:var(--gold)}
-#aud-close{background:none;border:1px solid var(--br);color:var(--mu);
-  padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px}
+#aud-close{background:none;border:1px solid var(--br);color:var(--mu);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px}
 #aud-close:hover{color:var(--rd);border-color:var(--rd)}
-
-/* TOAST */
-#toast{position:fixed;bottom:72px;left:50%;
-  transform:translateX(-50%) translateY(80px);
-  background:var(--s2);border:1px solid var(--br);color:var(--tx);
-  padding:10px 20px;border-radius:8px;font-size:13px;
-  transition:transform .3s ease;z-index:1001;white-space:nowrap;
-  box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#toast{position:fixed;bottom:72px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--s2);border:1px solid var(--br);color:var(--tx);padding:10px 20px;border-radius:8px;font-size:13px;transition:transform .3s ease;z-index:1001;white-space:nowrap;box-shadow:0 8px 30px rgba(0,0,0,.5)}
 #toast.show{transform:translateX(-50%) translateY(0)}
-
-/* BLOCKED */
 .block-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg)}
 .block-inner{text-align:center;padding:40px}
 .block-icon{font-size:60px;opacity:.25;margin-bottom:20px}
@@ -573,26 +352,15 @@ body::before{content:'';position:fixed;inset:0;
 </style>
 </head>
 <body>
-
 <div id="loading">VAULT — INITIALIZING…</div>
-
 <div id="app">
-
-  <!-- HEADER -->
   <header class="hdr">
     <div class="hdr-logo">
       <div class="logo-icon">🔐</div>
-      <div>
-        <div class="logo-title">PRIVATE VAULT</div>
-        <div class="logo-sub">SECURE FILE STORAGE</div>
-      </div>
+      <div><div class="logo-title">PRIVATE VAULT</div><div class="logo-sub">SECURE FILE STORAGE</div></div>
     </div>
     <div class="hdr-right">
-      <div class="sess-badge">
-        <div class="sess-dot"></div>
-        <span style="color:var(--mu);font-size:10px">SESSION</span>
-        <span id="timer">--:--:--</span>
-      </div>
+      <div class="sess-badge"><div class="sess-dot"></div><span style="color:var(--mu);font-size:10px">SESSION</span><span id="timer">--:--:--</span></div>
       <button id="admin-btn">🛡 Admin</button>
     </div>
     <div id="admin-panel">
@@ -601,17 +369,11 @@ body::before{content:'';position:fixed;inset:0;
       <span id="admin-err"></span>
     </div>
   </header>
-
-  <!-- BREADCRUMB -->
   <div class="bc-row" id="breadcrumb"></div>
-
-  <!-- ADMIN BAR -->
   <div id="admin-bar">
     <button class="tb-btn" id="new-folder-btn">📁 New Folder</button>
-    <span class="admin-tag">Admin Mode Active — Only you can upload & delete</span>
+    <span class="admin-tag">Admin Mode — Only you can upload & delete</span>
   </div>
-
-  <!-- UPLOAD (admin only) -->
   <div id="upload-zone">
     <div class="sec-lbl">Upload to Current Folder</div>
     <div id="dropzone">
@@ -620,37 +382,18 @@ body::before{content:'';position:fixed;inset:0;
       <div class="dz-txt">Drag & drop or click to upload</div>
       <div class="dz-sub">Photos · Videos · Audio · Docs · Any format</div>
     </div>
-    <div id="prog-wrap">
-      <div id="prog-txt">Uploading…</div>
-      <div class="prog-track"><div id="prog-bar"></div></div>
-    </div>
+    <div id="prog-wrap"><div id="prog-txt">Uploading…</div><div class="prog-track"><div id="prog-bar"></div></div></div>
   </div>
-
-  <!-- FILES -->
   <div>
     <div class="files-hdr">
       <div class="sec-lbl" style="margin-bottom:0">Files & Folders</div>
       <button id="refresh" onclick="location.reload()">↻ Refresh</button>
     </div>
     <div id="grid"></div>
-    <div id="empty">
-      <div class="ei">📭</div>
-      <div>This folder is empty</div>
-      <div style="font-size:11px">Log in as Admin to upload files or create folders</div>
-    </div>
+    <div id="empty"><div class="ei">📭</div><div>This folder is empty</div><div style="font-size:11px">Log in as Admin to upload files or create folders</div></div>
   </div>
-
 </div>
-
-<!-- AUDIO PLAYER -->
-<div id="aud-player">
-  <span id="aud-title">No track</span>
-  <audio id="aud-el" controls><source id="aud-src" src=""></audio>
-  <button id="aud-close">✕ Close</button>
-</div>
-
-<!-- TOAST -->
+<div id="aud-player"><span id="aud-title">No track</span><audio id="aud-el" controls><source id="aud-src" src=""></audio><button id="aud-close">✕ Close</button></div>
 <div id="toast"></div>
-
 </body>
 </html>
